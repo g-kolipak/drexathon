@@ -18,12 +18,18 @@ import math
 CLIP = 0.995  # keep log-odds finite
 
 
-def evidence(p: float) -> float:
-    p = min(max(p, 1 - CLIP), CLIP)
+def evidence(p, base: float | None = None) -> float:
+    """Yes/no confidence -> log-odds. With `base` (a pick-one question's
+    chance level, e.g. 1/8), a pick share -> log(p / base) instead; a pair
+    Drex was never asked about (p is None) counts as mildly against."""
+    if base is not None:
+        return -1.0 if p is None else max(-3.0, min(3.0, math.log(
+            max(p, 1e-3) / base)))
+    p = min(max(p or 0.0, 1 - CLIP), CLIP)
     return math.log(p / (1 - p))
 
 
-def _gain(piece, cell, layout, at, right, below) -> tuple[float, int]:
+def _gain(piece, cell, layout, at, right, below, base=None):
     """Evidence for `piece` at `cell` from every placed neighbour."""
     r, c = cell
     total, touching = 0.0, 0
@@ -35,12 +41,13 @@ def _gain(piece, cell, layout, at, right, below) -> tuple[float, int]:
         if other is None:
             continue
         a, b = (other, piece) if first else (piece, other)
-        total += evidence(table.get(a, {}).get(b, 0.0))
+        total += evidence(table.get(a, {}).get(b), base)
         touching += 1
     return total, touching
 
 
-def arrange(right: dict, below: dict, beam: int = 60, starts: int = 12):
+def arrange(right: dict, below: dict, beam: int = 60, starts: int = 12,
+            base: float | None = None):
     """Best layout found: (cells {piece: (row, col)}, score, links).
 
     links lists every neighbour pair in the layout as
@@ -51,9 +58,9 @@ def arrange(right: dict, below: dict, beam: int = 60, starts: int = 12):
                                               ("below", below))
                     for a in t for b, p in t[a].items()), reverse=True)
     states = []
-    for p, a, b, d in [s for s in seeds if s[0] > 0.5][:starts]:
+    for p, a, b, d in [s for s in seeds if evidence(s[0], base) > 0][:starts]:
         cells = {a: (0, 0), b: (0, 1) if d == "right" else (1, 0)}
-        states.append((evidence(p), cells))
+        states.append((evidence(p, base), cells))
     best = max(states, key=lambda s: s[0]) if states else (0.0, {})
     while states:
         grown = []
@@ -65,7 +72,8 @@ def arrange(right: dict, below: dict, beam: int = 60, starts: int = 12):
                 if piece in cells:
                     continue
                 for cell in free:
-                    gain, touching = _gain(piece, cell, cells, at, right, below)
+                    gain, touching = _gain(piece, cell, cells, at, right,
+                                           below, base)
                     if touching and gain > 0:
                         grown.append((score + gain, {**cells, piece: cell}))
         if not grown:

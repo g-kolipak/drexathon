@@ -13,7 +13,11 @@ with no table around them. On a quarter-size copy of the photo:
 import cv2
 import numpy as np
 
-MIN_SHARE, MAX_SHARE = 0.004, 0.2  # piece area as a share of the photo
+from .masks import largest as _largest, split as _split
+
+# piece area as a share of the photo: only a noise floor and 'not the
+# whole table'. What is really paper is Drex's call (scripts/rebuild_photo).
+MIN_SHARE, MAX_SHARE = 0.0003, 0.8
 
 
 def _el(k: int):
@@ -89,9 +93,6 @@ def _candidates(table, bright):
     contours, _ = cv2.findContours(blobs, cv2.RETR_EXTERNAL,
                                    cv2.CHAIN_APPROX_NONE)
     for c in contours:
-        x, y, cw, ch = cv2.boundingRect(c)
-        if x <= 2 or y <= 2 or x + cw >= w - 2 or y + ch >= h - 2:
-            continue
         if not MIN_SHARE * h * w < cv2.contourArea(c) < MAX_SHARE * h * w:
             continue
         mask = np.zeros((h, w), np.uint8)
@@ -112,35 +113,6 @@ def _close_outline(mask, paper):
                                      _el(7)))
 
 
-def _split(mask, radius: int = 10, min_area: int = 2000):
-    """Separate pieces that only touch at a corner or a thin neck."""
-    core = cv2.erode(mask, _el(2 * radius + 1))
-    n, labels, stats, _ = cv2.connectedComponentsWithStats(core, 4)
-    keep = [k for k in range(1, n) if stats[k, cv2.CC_STAT_AREA] >= min_area]
-    if len(keep) < 2:
-        return [mask]
-    seeds = np.isin(labels, keep)
-    _, nearest = cv2.distanceTransformWithLabels(
-        (~seeds).astype(np.uint8), cv2.DIST_L2, 5,
-        labelType=cv2.DIST_LABEL_CCOMP)
-    parts = []
-    for k in keep:
-        ids = np.unique(nearest[labels == k])
-        part = ((mask > 0) & np.isin(nearest, ids)).astype(np.uint8)
-        parts.append(_largest(part))
-    return parts
-
-
-def _largest(mask):
-    """The biggest blob of a mask, with its holes filled."""
-    contours, _ = cv2.findContours(mask.astype(np.uint8), cv2.RETR_EXTERNAL,
-                                   cv2.CHAIN_APPROX_NONE)
-    out = np.zeros(mask.shape, np.uint8)
-    if contours:
-        cv2.drawContours(out, [max(contours, key=cv2.contourArea)], -1, 1, -1)
-    return out
-
-
 def _refine(half, cand, others, table_color):
     """GrabCut one candidate on the half-size photo. Masks are half-size."""
     ys, xs = np.where(cv2.dilate(cand, _el(161)) > 0)
@@ -152,19 +124,38 @@ def _refine(half, cand, others, table_color):
     gc[cand[box] > 0] = cv2.GC_PR_FGD
     gc[cv2.erode(cand, _el(37))[box] > 0] = cv2.GC_FGD
     gc[others[box] > 0] = cv2.GC_BGD
-    cv2.grabCut(crop, gc, None, np.zeros((1, 65)), np.zeros((1, 65)), 5,
-                cv2.GC_INIT_WITH_MASK)
+    try:
+        cv2.grabCut(crop, gc, None, np.zeros((1, 65)), np.zeros((1, 65)), 5,
+                    cv2.GC_INIT_WITH_MASK)
+    except cv2.error:  # no table around it (fills its crop): keep as found
+        return cand
     fg = ((gc == cv2.GC_FGD) | (gc == cv2.GC_PR_FGD)).astype(np.uint8)
     out = np.zeros(half.shape[:2], np.uint8)
     out[box] = cv2.morphologyEx(fg, cv2.MORPH_OPEN, _el(5))
     return out
 
 
-def find_pieces(image) -> list:
+def find_pieces(image, work: int | None = None) -> list:
+    """Masks, one per candidate piece (see _find). The working size is
+    picked from the photo: if the pieces come out small at 1280 px, look
+    again at twice the resolution, so small scraps keep their detail."""
+    if work:
+        return _find(image, work)
+    masks = _find(image, 1280)
+    longest = max(image.shape[:2])
+    if masks and longest > 1280:
+        scale = 1280 / longest
+        typical = np.median([m.sum() for m in masks]) * scale * scale
+        if typical < 60 * 60:
+            return _find(image, min(2560, longest))
+    return masks
+
+
+def _find(image, work: int) -> list:
     """Masks (uint8 0/1, same size as `image`), one per torn piece, in
     reading order of their centres: top to bottom, then left to right."""
     big_h, big_w = image.shape[:2]
-    scale = 1280 / max(big_h, big_w)  # the "quarter" working size
+    scale = work / max(big_h, big_w)  # the "quarter" working size
     small = cv2.resize(image, None, fx=scale, fy=scale,
                        interpolation=cv2.INTER_AREA)
     half = cv2.resize(image, (small.shape[1] * 2, small.shape[0] * 2),

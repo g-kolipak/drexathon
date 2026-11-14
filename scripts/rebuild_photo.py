@@ -26,11 +26,12 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import cv2
+import numpy as np
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from unshred import arrange, cutouts, fit, scoring, tear  # noqa: E402
+from unshred import arrange, compare, cutouts, fit, scoring, screen, tear  # noqa: E402
 from unshred.drex import VISION_MODEL, ask  # noqa: E402
 from unshred.photo import find_pieces  # noqa: E402
 
@@ -51,9 +52,8 @@ ASK = {
 
 
 def score_pairs(up: dict, k: int, workers: int):
-    """Every ordered pair, both directions, k alignments: Drex confidence."""
-    jobs = [(a, b, d, f) for d in ("right", "below") for a in up for b in up
-            if a != b for f in fit.fits(up[a], up[b], d, k)]
+    """Shortlisted pairs, both directions, k alignments: Drex confidence."""
+    jobs = screen.shortlist(up, k=k)
 
     def one(start):
         batch = jobs[start:start + 8]  # Drex Max reads up to 8 images
@@ -123,29 +123,45 @@ def main() -> int:
     out = ROOT / "runs" / "photo" / Path(args.photo).stem
     (out / "joins").mkdir(parents=True, exist_ok=True)
     saved = out / "joined_scores.json"
+    masks = find_pieces(image)
     pieces = {f"p{i + 1}": cutouts.straighten(cutouts.cutout(image, m))
-              for i, m in enumerate(find_pieces(image))}
+              for i, m in enumerate(masks)}
+    where = {f"p{i + 1}": [float(v) for v in np.argwhere(m > 0).mean(0)[::-1]]
+             for i, m in enumerate(masks)}
     t0 = time.monotonic()
     if args.reuse:
         data = json.loads(saved.read_text())
-        turns, best = data["turns"], data["best"]
+        paper, turns, best = data["paper"], data["turns"], data["best"]
         up = {p: tear.quarter_turn(pieces[p], turns[p]["degrees"])
-              for p in pieces}
+              for p in turns}
     else:
-        up, turns, calls = tear.orient_all(pieces, workers=args.workers)
+        paper, pcalls = screen.is_paper(pieces, workers=args.workers)
+        kept = {p: pieces[p] for p in pieces if paper[p] >= 0.5}
+        up, turns, calls = tear.orient_all(kept, workers=args.workers)
         best, more = score_pairs(up, args.k, args.workers)
-        use = scoring.usage(calls + more)
-        saved.write_text(json.dumps({"turns": turns, "best": best,
-                                     "usage": use}, indent=1))
-        print(f"Drex Max: {use['calls']} calls ({len(pieces)} upright, "
-              f"{len(more)} joined checks), {use['input_tokens']} input "
-              f"tokens, wall {time.monotonic() - t0:.1f} s")
-    right = {p: {} for p in up}
-    below = {p: {} for p in up}
-    for key, v in best.items():
-        a, b, d = key.split("|")
-        (right if d == "right" else below)[a][b] = v["p"]
-    cells, score, links = arrange.arrange(right, below, beam=args.beam)
+        use = scoring.usage(pcalls + calls + more)
+        saved.write_text(json.dumps({"paper": paper, "turns": turns,
+                                     "best": best, "usage": use}, indent=1))
+        print(f"Drex Max: {use['calls']} calls ({len(pcalls)} paper or not, "
+              f"{len(calls)} upright, {len(more)} joined checks), "
+              f"{use['input_tokens']} input tokens, wall "
+              f"{time.monotonic() - t0:.1f} s")
+    dropped = [f"{p} ({paper[p]:.2f})" for p in pieces if p not in up]
+    print(f"{len(masks)} candidates; Drex: {len(up)} are paper"
+          + (f", not paper: {', '.join(dropped)}" if dropped else ""))
+    data = json.loads(saved.read_text())
+    if "pick" not in data:  # Drex compares each piece's top candidates
+        t1 = time.monotonic()
+        right, below, ccalls = compare.compare(up, best, workers=args.workers)
+        data["pick"] = {"right": right, "below": below}
+        saved.write_text(json.dumps(data, indent=1))
+        use = scoring.usage(ccalls)
+        print(f"Drex Max compare: {use['calls']} pick-one calls, "
+              f"{use['input_tokens']} input tokens, "
+              f"wall {time.monotonic() - t1:.1f} s")
+    right, below = data["pick"]["right"], data["pick"]["below"]
+    cells, score, links = arrange.arrange(right, below, beam=args.beam,
+                                          base=1 / 8)
     rows = 1 + max(r for r, _ in cells.values())
     cols = 1 + max(c for _, c in cells.values())
     at = {v: k for k, v in cells.items()}
@@ -164,6 +180,9 @@ def main() -> int:
         cands = ", ".join(f"{c['link']} {c['score']:.2f}"
                           for c in item["candidates"])
         print(f"  needs human: {item['piece']}  (best: {cands})")
+    (out / "layout.json").write_text(json.dumps({
+        "cells": cells, "links": links,
+        "where": {p: where[p] for p in up}}, indent=1))
     places = _places(up, cells, links, best)
     cv2.imwrite(str(out / "rebuilt.jpg"), fit.compose(up, places))
     print(f"Saved to {out}/ (rebuilt.jpg, joins/, joined_scores.json)")
