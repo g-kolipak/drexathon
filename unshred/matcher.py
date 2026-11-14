@@ -1,153 +1,126 @@
-"""Matcher: piece agents ask Drex which pieces are their neighbors.
+"""Matcher: ask Drex (or the baseline) which pieces are neighbors.
 
-Each piece is an agent with a local view. For every piece A one Drex
-request asks all of A's right-candidate and below-candidate questions
-plus "is A on the right edge?". Output: score tables 0..1 and per-call
-metrics. The answer key is never part of any request.
+Phase 1, match_right: one request per piece A. It scores every other
+piece as A's right neighbor and asks whether A is on the right edge.
+
+Phase 2, match_below: pieces narrower than the page carry no top-to-bottom
+continuity (line 2 of a piece does not continue line 1), so stacking two
+single pieces has no signal. Rows that phase 1 rebuilt to full width do:
+the last line of a row runs on into the first line of the next row. One
+request stacks every full row on every other and scores the result, and
+the row score is copied to the pieces that sit in the same column.
+
+Output: right[A][B] and below[A][B], values 0 to 1, plus per-call metrics
+(latency ms, input tokens). The answer key is never part of any request.
 """
 
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 
 from .drex import DEFAULT_MODEL, CallResult, ask as default_ask
-from .shredder import Piece, Shred
+from .questions import below_request, right_request
+from .shredder import Piece
 
-
-@dataclass
-class PieceAgent:
-    piece: Piece
-    right: dict[str, float] = field(default_factory=dict)
-    below: dict[str, float] = field(default_factory=dict)
-    right_edge: float = 0.0
-
-    @property
-    def id(self) -> str:
-        return self.piece.piece_id
-
-    @property
-    def text(self) -> str:
-        return "\n".join(self.piece.lines)
+Table = dict[str, dict[str, float]]
 
 
 @dataclass
 class MatchResult:
-    agents: dict[str, PieceAgent]
-    calls: list[CallResult]
-
-    @property
-    def right(self) -> dict[str, dict[str, float]]:
-        return {a.id: dict(a.right) for a in self.agents.values()}
-
-    @property
-    def below(self) -> dict[str, dict[str, float]]:
-        return {a.id: dict(a.below) for a in self.agents.values()}
-
-    @property
-    def right_edge(self) -> dict[str, float]:
-        return {a.id: a.right_edge for a in self.agents.values()}
+    right: Table = field(default_factory=dict)
+    below: Table = field(default_factory=dict)
+    right_edge: dict[str, float] = field(default_factory=dict)
+    bottom_edge: dict[str, float] = field(default_factory=dict)
+    calls: list[CallResult] = field(default_factory=list)
 
 
-def _join_right(a: Piece, b: Piece) -> str:
-    n = max(len(a.lines), len(b.lines))
-    out = []
-    for i in range(n):
-        la = a.lines[i] if i < len(a.lines) else ""
-        lb = b.lines[i] if i < len(b.lines) else ""
-        out.append(la + lb)
-    return "\n".join(out)
+def _noul(answers: dict, qid: str) -> float:
+    try:
+        return float(answers[qid]["noul"])
+    except (KeyError, TypeError, ValueError) as e:
+        raise ValueError(f"no noul answer came back for {qid!r}") from e
 
 
-def _stack(a: Piece, b: Piece) -> str:
-    return "\n".join(list(a.lines) + list(b.lines))
+def _probs(answers: dict, qid: str) -> dict:
+    try:
+        return dict(answers[qid]["probabilities"])
+    except (KeyError, TypeError, ValueError) as e:
+        raise ValueError(f"no choice answer came back for {qid!r}") from e
 
 
-def _build_request(agent: PieceAgent, others: list[PieceAgent]) -> dict:
-    cand_right = {o.id: _join_right(agent.piece, o.piece) for o in others}
-    cand_below = {o.id: _stack(agent.piece, o.piece) for o in others}
-    state = {
-        "piece_A": agent.text,
-        "candidates_right": cand_right,
-        "candidates_below": cand_below,
-    }
-    questions = {
-        "right_edge": {
-            "type": "noul",
-            "instructions": (
-                "Looking at piece_A alone: is piece_A on the right edge of "
-                "the page, i.e. no page text follows it to the right?"
-            ),
-        }
-    }
-    for o in others:
-        questions[f"right_{o.id}"] = {
-            "type": "noul",
-            "instructions": (
-                f"candidates_right['{o.id}'] is piece_A joined line by line "
-                f"with candidate '{o.id}'. Is that joined text one "
-                "continuous natural passage, with words and line breaks "
-                "intact and nothing missing or duplicated?"
-            ),
-        }
-        questions[f"below_{o.id}"] = {
-            "type": "noul",
-            "instructions": (
-                f"candidates_below['{o.id}'] is piece_A stacked directly "
-                f"above candidate '{o.id}'. Is that stacked text one "
-                "continuous natural passage, with words and line breaks "
-                "intact and nothing missing or duplicated?"
-            ),
-        }
-    return {"state": state, "questions": questions}
+def match_right(pieces: list[Piece], ask_fn=default_ask,
+                model: str = DEFAULT_MODEL, strategy: str = "noul",
+                on_call=None, workers: int = 4, **ask_kwargs) -> MatchResult:
+    """Score every ordered pair (A, B) as 'B sits directly right of A'."""
 
-
-def match(shred: Shred, model: str = DEFAULT_MODEL,
-          ask_fn=default_ask, **ask_kwargs) -> MatchResult:
-    """Run neighbor matching for every piece. One Drex call per piece."""
-    agents = {p.piece_id: PieceAgent(piece=p) for p in shred.pieces}
-    calls: list[CallResult] = []
-    for agent in agents.values():
-        others = [a for a in agents.values() if a.id != agent.id]
-        req = _build_request(agent, others)
-        res = ask_fn(req["state"], req["questions"], model=model,
-                     **ask_kwargs)
-        calls.append(res)
+    def one(a: Piece):
+        others = [p for p in pieces if p.piece_id != a.piece_id]
+        state, questions = right_request(a, others, strategy)
+        res = ask_fn(state, questions, model=model, **ask_kwargs)
         answers = res.body["answers"]
-        agent.right_edge = answers["right_edge"]["noul"]
-        for o in others:
-            agent.right[o.id] = answers[f"right_{o.id}"]["noul"]
-            agent.below[o.id] = answers[f"below_{o.id}"]["noul"]
-    return MatchResult(agents=agents, calls=calls)
+        if strategy == "choice" and others:
+            probs = _probs(answers, "right_pick")
+            row = {o.piece_id: float(probs.get(o.piece_id, 0.0))
+                   for o in others}
+        else:
+            row = {o.piece_id: _noul(answers, f"right_{o.piece_id}")
+                   for o in others}
+        edge = _noul(answers, "right_edge")
+        if on_call:
+            on_call("right", a.piece_id, res)
+        return a.piece_id, row, edge, res
+
+    result = MatchResult()
+    with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+        for pid, row, edge, res in pool.map(one, pieces):
+            result.right[pid] = row
+            result.right_edge[pid] = edge
+            result.calls.append(res)
+    return result
 
 
-def neighbor_stats(result: MatchResult,
-                   answer_key: dict[str, tuple[int, int]],
-                   rows: int, cols: int) -> tuple[int, int]:
-    """(correct, total) over right- and below-neighbor picks."""
-    total = correct = 0
-    pos_of = {pid: pos for pid, pos in answer_key.items()}
-    id_at = {pos: pid for pid, pos in answer_key.items()}
-    for pid, (r, c) in pos_of.items():
-        total += 1  # right neighbor (or right edge)
-        if c + 1 < cols:
-            true_id = id_at[(r, c + 1)]
-            pred = max((b for b in result.agents[pid].right),
-                       key=lambda b: result.agents[pid].right[b])
-            if pred == true_id:
-                correct += 1
-        elif result.agents[pid].right_edge >= 0.5:
-            correct += 1
-        if r + 1 < rows:  # below neighbor
-            total += 1
-            true_id = id_at[(r + 1, c)]
-            pred = max((b for b in result.agents[pid].below),
-                       key=lambda b: result.agents[pid].below[b])
-            if pred == true_id:
-                correct += 1
-    return correct, total
+def strip_lines(row: list[Piece]) -> list[str]:
+    """The full-width text lines of one rebuilt row of pieces."""
+    height = max(len(p.lines) for p in row)
+    return ["".join(p.lines[j] if j < len(p.lines) else "" for p in row)
+            .rstrip() for j in range(height)]
 
 
-def neighbor_accuracy(result: MatchResult,
-                      answer_key: dict[str, tuple[int, int]],
-                      rows: int, cols: int) -> float:
-    """Share of neighbor picks (right or below) that match the true key."""
-    correct, total = neighbor_stats(result, answer_key, rows, cols)
-    return correct / total
+def match_below(result: MatchResult, rows: list[list[Piece]],
+                ask_fn=default_ask, model: str = DEFAULT_MODEL,
+                strategy: str = "noul", on_call=None,
+                **ask_kwargs) -> MatchResult:
+    """Score every ordered pair of full rows as 'Y sits directly below X'.
+
+    Fills result.below and result.bottom_edge for the pieces in `rows`.
+    """
+    result.below, result.bottom_edge = {}, {}
+    strips = {f"r{i}": strip_lines(row) for i, row in enumerate(rows)}
+    state, questions = below_request(strips, strategy)
+    answers: dict = {}
+    if questions:
+        res = ask_fn(state, questions, model=model, **ask_kwargs)
+        result.calls.append(res)
+        answers = res.body["answers"]
+        if on_call:
+            on_call("below", rows[0][0].piece_id, res)
+    for i, top in enumerate(rows):
+        x = f"r{i}"
+        ended = f"bottom_{x}" not in questions  # blank last line: page end
+        bottom = 1.0 if ended else _noul(answers, f"bottom_{x}")
+        picks = (_probs(answers, f"below_pick_{x}")
+                 if f"below_pick_{x}" in questions else None)
+        for j, low in enumerate(rows):
+            if i == j:
+                continue
+            y = f"r{j}"
+            if ended:
+                score = 0.0
+            elif picks is not None:
+                score = float(picks.get(y, 0.0))
+            else:
+                score = _noul(answers, f"below_{x}__{y}")
+            for pa, pb in zip(top, low):
+                result.below.setdefault(pa.piece_id, {})[pb.piece_id] = score
+        for p in top:
+            result.bottom_edge[p.piece_id] = bottom
+    return result

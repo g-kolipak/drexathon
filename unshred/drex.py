@@ -24,6 +24,7 @@ class CallResult:
     input_tokens: int
     request_id: str
     model: str
+    cost_usd: float | None = None  # set only when the API reports it
 
 
 def ask(state, questions, model: str = DEFAULT_MODEL, key: str | None = None,
