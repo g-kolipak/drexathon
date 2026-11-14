@@ -57,12 +57,12 @@
 </div>
 <script>
   const $ = (id) => document.getElementById(id);
-  let chosen = null, timer = null, current = null;
+  let chosen = null, timer = null, current = null, shownSteps = -1;
   const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]));
   function pick(file) {
     if (!file || !file.type.startsWith("image/")) return;
     chosen = file; $("before").src = URL.createObjectURL(file);
-    $("after").removeAttribute("src"); $("steps").innerHTML = ""; $("log").textContent = "";
+    $("after").removeAttribute("src"); delete $("after").dataset.id; $("steps").innerHTML = ""; $("log").textContent = "";
     $("go").disabled = false; $("state").textContent = file.name + " ready";
   }
   $("drop").onclick = (e) => { if (e.target.id !== "go") $("file").click(); };
@@ -72,30 +72,38 @@
   $("drop").ondrop = (e) => { e.preventDefault(); $("drop").classList.remove("over"); pick(e.dataTransfer.files[0]); };
 
   function renderSteps(id, steps) {
+    if (steps.length === shownSteps) return;  // only re-draw when a step is added
+    shownSteps = steps.length;
     $("steps").innerHTML = steps.map((s) => {
       const who = s.drex_calls > 0 ? '<span class="tag drex">Drex · ' + s.drex_calls + ' calls</span>'
                                    : '<span class="tag cv">OpenCV</span>';
-      const img = s.image ? '<img loading="lazy" src="/api/rebuild/' + id + '/step/' + s.image + '" alt="Step ' + s.step + '">' : "";
+      const img = s.image ? '<img src="/api/rebuild/' + id + '/step/' + s.image + '" alt="Step ' + s.step + '">' : "";
       return '<div class="card"><h3>Step ' + s.step + ': ' + esc(s.label) + '</h3><div class="meta">' + who +
              s.seconds.toFixed(2) + ' s</div>' + img + '</div>';
     }).join("");
   }
   async function show(id, fromHistory) {
-    current = id; clearInterval(timer);
+    current = id; clearInterval(timer); timer = null; shownSteps = -1;
     if (fromHistory) { $("before").src = "/api/rebuild/" + id + "/source"; $("after").removeAttribute("src"); }
     const tick = async () => {
       const job = await (await fetch("/api/rebuild/" + id)).json();
+      if (id !== current) return;
       renderSteps(id, job.steps || []);
-      $("log").textContent = job.log.join("\n"); $("log").scrollTop = $("log").scrollHeight;
-      if (job.status === "running") { $("state").textContent = "Drex is rebuilding… step " + ((job.steps || []).length + 1); return; }
-      clearInterval(timer); $("go").disabled = !chosen;
+      const logText = job.log.join("\n");
+      if ($("log").textContent !== logText) { $("log").textContent = logText; $("log").scrollTop = $("log").scrollHeight; }
+      if (job.status === "running") {
+        $("state").textContent = "Drex is rebuilding… step " + ((job.steps || []).length + 1);
+        if (!timer) timer = setInterval(tick, 1500);
+        return;
+      }
+      clearInterval(timer); timer = null; $("go").disabled = !chosen;
       if (job.status === "done") {
-        $("after").src = "/api/rebuild/" + id + "/image?t=" + Date.now();
+        if ($("after").dataset.id !== id) { $("after").src = "/api/rebuild/" + id + "/image"; $("after").dataset.id = id; }
         $("state").innerHTML = '<span class="ok">Done' + (job.total_seconds ? ' in ' + job.total_seconds.toFixed(1) + ' s' : '') + '</span>';
       } else { $("state").innerHTML = '<span class="bad">Could not rebuild this photo (see the log)</span>'; }
       loadHistory();
     };
-    await tick(); timer = setInterval(tick, 1000);
+    await tick();
   }
   async function loadHistory() {
     const { runs } = await (await fetch("/api/history")).json();
