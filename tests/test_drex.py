@@ -71,3 +71,20 @@ def test_ask_requires_key(monkeypatch):
     monkeypatch.delenv("NACE_API_KEY", raising=False)
     with pytest.raises(RuntimeError, match="NACE_API_KEY"):
         ask("s", {})
+
+
+def test_ask_sends_images_only_when_given(monkeypatch):
+    monkeypatch.setenv("NACE_API_KEY", "sk-test")
+    sent = []
+
+    def fake_post(url, **kw):
+        sent.append(kw["json"])
+        return _fake_resp()
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+    q = {"q": {"type": "noul", "instructions": "x?"}}
+    ask("s", q)
+    ask("s", q, model="drex-max-v1.1", images=["data:image/jpeg;base64,AA"])
+    assert "images" not in sent[0]
+    assert sent[1]["images"] == ["data:image/jpeg;base64,AA"]
+    assert sent[1]["model"] == "drex-max-v1.1"

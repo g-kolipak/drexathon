@@ -14,6 +14,7 @@ import httpx
 
 API_URL = "https://drex.nace.ai/v1/systemone"
 DEFAULT_MODEL = "drex-v2.0"
+VISION_MODEL = "drex-max-v1.1"  # reads images, up to 8 per request
 RETRYABLE_STATUS = {429, 500, 529}
 
 
@@ -28,17 +29,21 @@ class CallResult:
 
 
 def ask(state, questions, model: str = DEFAULT_MODEL, key: str | None = None,
-        timeout: float = 90.0, max_retries: int = 3) -> CallResult:
+        timeout: float = 90.0, max_retries: int = 3,
+        images: list[str] | None = None) -> CallResult:
     """Send one decision request to Drex and return the parsed response.
 
     state: any JSON-serializable value (text, dict, list).
     questions: {id: {type, instructions, criteria?}}.
+    images: data URLs for a Drex Max model; questions call them Image 1..N.
     Raises DrexError on auth/validation failure (never retried).
     """
     key = key or os.environ.get("NACE_API_KEY")
     if not key:
         raise RuntimeError("NACE_API_KEY is not set")
     payload = {"model": model, "state": state, "questions": questions}
+    if images:
+        payload["images"] = images
     last_err: Exception | None = None
     for attempt in range(max_retries + 1):
         t0 = time.monotonic()
