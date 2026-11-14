@@ -1,6 +1,7 @@
 """Helpers for scripts/rebuild_photo.py: Drex pair ratings, score tables,
 candidate layouts and stage timing."""
 
+import json
 import math
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -85,11 +86,32 @@ def candidates(up, best, right, below, rated: bool, per: int = 4):
 
 
 class Clock:
-    def __init__(self):
-        self.t0 = self.t = time.monotonic()
+    """Times each stage, prints it, and (with `out`) keeps a step-by-step
+    record in out/steps.json with one picture per step in out/steps/."""
 
-    def __call__(self, label: str, calls=None):
+    def __init__(self, out=None):
+        self.t0 = self.t = time.monotonic()
+        self.out, self.steps = out, []
+
+    def __call__(self, label: str, calls=None, image=None):
         now = time.monotonic()
         extra = f"  ({len(calls)} Drex calls)" if calls is not None else ""
-        print(f"  {now - self.t:6.2f} s  {label}{extra}")
+        print(f"  {now - self.t:6.2f} s  {label}{extra}", flush=True)
+        step = {"step": len(self.steps) + 1, "label": label,
+                "seconds": round(now - self.t, 2),
+                "drex_calls": len(calls) if calls is not None else 0,
+                "image": None}
+        if self.out is not None:
+            if image is not None:
+                import cv2
+                (self.out / "steps").mkdir(parents=True, exist_ok=True)
+                s = min(1.0, 1400 / max(image.shape[:2]))
+                small = cv2.resize(image, None, fx=s, fy=s,
+                                   interpolation=cv2.INTER_AREA)
+                step["image"] = f"step{step['step']}.jpg"
+                cv2.imwrite(str(self.out / "steps" / step["image"]), small)
+            self.steps.append(step)
+            (self.out / "steps.json").write_text(json.dumps(
+                {"steps": self.steps,
+                 "total_seconds": round(now - self.t0, 2)}, indent=1))
         self.t = now
