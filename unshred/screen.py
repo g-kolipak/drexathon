@@ -159,7 +159,7 @@ def shortlist(up: dict, k: int = 3, keep: int = 8, all_upto: int = 12,
     small = {p: cv2.resize(up[p], None, fx=scale, fy=scale,
                            interpolation=cv2.INTER_AREA) for p in ids}
     keys = [(a, b, d) for d in ("right", "below") for a in ids for b in ids
-            if a != b]
+            if a.split("@")[0] != b.split("@")[0]]
 
     def one(key):
         a, b, d = key
@@ -172,9 +172,9 @@ def shortlist(up: dict, k: int = 3, keep: int = 8, all_upto: int = 12,
     chosen = set()
     for d in ("right", "below"):
         for p in ids:
-            out = sorted((b for b in ids if b != p),
+            out = sorted((b for b in ids if (p, b, d) in quick),
                          key=lambda b: -quick[(p, b, d)][1])
-            inn = sorted((a for a in ids if a != p),
+            inn = sorted((a for a in ids if (a, p, d) in quick),
                          key=lambda a: -quick[(a, p, d)][1])
             n = len(ids) if len(ids) <= all_upto else keep
             chosen |= {(p, b, d) for b in out[:n]}
