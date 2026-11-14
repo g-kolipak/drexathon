@@ -24,6 +24,7 @@ ROOT = Path(__file__).resolve().parent.parent
 UPLOADS = ROOT / "runs" / "uploads"
 MAX_BYTES = 40_000_000
 JOBS: dict = {}
+RUN_ONE = threading.Lock()  # one photo at a time: Drex limits concurrency
 app = FastAPI(title="Unshred")
 
 
@@ -48,8 +49,15 @@ def _steps(jid: str) -> dict:
 
 
 def _run(jid: str, src: Path) -> None:
-    """Run the pipeline on one upload, keeping its progress lines."""
+    """Run the pipeline on one upload (waiting for any earlier upload to
+    finish first), keeping its progress lines."""
     job = JOBS[jid]
+    with RUN_ONE:
+        job["status"] = "running"
+        _pipeline(jid, src, job)
+
+
+def _pipeline(jid: str, src: Path, job: dict) -> None:
     proc = subprocess.Popen(
         [sys.executable, str(ROOT / "scripts" / "rebuild_photo.py"), str(src)],
         cwd=ROOT, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True)
@@ -74,7 +82,7 @@ async def start(request: Request):
     UPLOADS.mkdir(parents=True, exist_ok=True)
     src = UPLOADS / f"up_{jid}.jpg"
     src.write_bytes(body)
-    JOBS[jid] = {"status": "running", "log": []}
+    JOBS[jid] = {"status": "queued", "log": []}
     threading.Thread(target=_run, args=(jid, src), daemon=True).start()
     return {"id": jid}
 

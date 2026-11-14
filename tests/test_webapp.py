@@ -32,7 +32,7 @@ def test_upload_runs_the_pipeline_and_serves_the_result(monkeypatch, tmp_path):
     jid = client.post("/api/rebuild", content=b"jpegbytes").json()["id"]
     for _ in range(50):
         job = client.get(f"/api/rebuild/{jid}").json()
-        if job["status"] != "running":
+        if job["status"] not in ("running", "queued"):
             break
         time.sleep(0.02)
     assert job["status"] == "done"
