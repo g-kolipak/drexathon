@@ -54,6 +54,15 @@ def is_paper(pieces: dict, ask_fn=default_ask, model: str = VISION_MODEL,
     return probs, calls
 
 
+WHAT_Q = "What does Image 1 show?"
+WHAT = {"paper": "A torn or cut piece of a paper page: printed, written on, "
+                 "or blank.",
+        "background": "Part of the table, cloth or other surface behind.",
+        "object": "An object that is not paper: a device, keyboard, pen, "
+                  "scissors or similar.",
+        "shadow": "A shadow, a reflection or glare."}
+
+
 def check(pieces: dict, ask_fn=default_ask, model: str = VISION_MODEL,
           workers: int = 16):
     """One Drex call per piece, all in parallel: is it paper, and which
@@ -62,7 +71,8 @@ def check(pieces: dict, ask_fn=default_ask, model: str = VISION_MODEL,
         pid, piece = item
         images = [data_url(quarter_turn(piece, t), 512) for t in TURNS]
         res = ask_fn(CHECK, {
-            "paper": {"type": "noul", "instructions": PAPER_Q.format(i=1)},
+            "paper": {"type": "choice", "instructions": WHAT_Q,
+                      "criteria": WHAT},
             "upright": {"type": "choice",
                         "instructions": "In which image is the printed text "
                                         "upright, reading normally from left "
@@ -73,7 +83,7 @@ def check(pieces: dict, ask_fn=default_ask, model: str = VISION_MODEL,
         a = res.body["answers"]
         probs = a["upright"]["probabilities"]
         best = max(range(4), key=lambda i: probs[f"image_{i + 1}"])
-        return pid, float(a["paper"]["noul"]), best, probs, res
+        return pid, float(a["paper"]["probabilities"]["paper"]), best, probs, res
 
     paper, turns, upright, calls = {}, {}, {}, []
     with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
