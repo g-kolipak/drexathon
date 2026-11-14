@@ -22,6 +22,7 @@
 
 import argparse
 import json
+import math
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
@@ -33,7 +34,7 @@ import numpy as np
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from unshred import arrange, build, compare, cutouts, fit, plain, scoring, screen, shade  # noqa: E402,E501
+from unshred import agents, arrange, build, compare, cutouts, fit, plain, scoring, screen, shade  # noqa: E402,E501
 from unshred.drex import VISION_MODEL, ask  # noqa: E402
 from unshred.photo import find_pieces  # noqa: E402
 
@@ -75,6 +76,25 @@ def rate_pairs(up: dict, workers: int):
 def fit_url(up, a, b, f):
     from unshred.tear import data_url
     return data_url(fit.joined(up[a], up[b], f, 640))
+
+
+def merge(pick: dict, d: str, best: dict, up: dict) -> dict:
+    """One confidence per pair from both Drex answers: the pick-one share
+    (against chance, 1 in 8) and the yes/no rating, averaged as evidence.
+    A pair Drex was never asked about counts as mildly against."""
+    out = {a: {} for a in up}
+    for a in up:
+        for b in up:
+            if a == b:
+                continue
+            ev = []
+            if pick.get(a, {}).get(b) is not None:
+                ev.append(arrange.evidence(pick[a][b], 1 / 8))
+            if f"{a}|{b}|{d}" in best:
+                ev.append(arrange.evidence(best[f"{a}|{b}|{d}"]["p"]))
+            e = sum(ev) / len(ev) if ev else -1.0
+            out[a][b] = 1 / (1 + math.exp(-e))
+    return out
 
 
 class Clock:
@@ -126,6 +146,7 @@ def main() -> int:
         calls += c3
         clock("compare: Drex picks each piece's true neighbours", c3)
         data = {"paper": paper, "turns": turns, "best": best,
+                "rated": not args.fast,
                 "pick": {"right": right, "below": below},
                 "usage": scoring.usage(calls)}
         saved.write_text(json.dumps(data, indent=1))
@@ -134,25 +155,39 @@ def main() -> int:
                                                         // 90) % 4))
           for p in pieces if paper[p] >= 0.5}
     right, below = data["pick"]["right"], data["pick"]["below"]
+    if data.get("rated", True):  # use BOTH Drex answers: yes/no and pick-one
+        right, below = (merge(t, d, best, up) for t, d in
+                        ((right, "right"), (below, "below")))
+        base = None
+    else:
+        base = 1 / 8
+    area = {p: int((up[p][..., 3] > 128).sum()) for p in up}
+    tiny = [p for p in up if area[p] < 0.2 * float(np.median(list(area.values())))]
+    for t in (right, below):  # slivers can't be placed: leave them out
+        for p in tiny:
+            t.pop(p, None)
+        for row in t.values():
+            for p in tiny:
+                row.pop(p, None)
     if not up:
         print("  Drex found no paper pieces; nothing to rebuild")
         return 1
     dropped = [f"{p} ({paper[p]:.2f})" for p in pieces if p not in up]
     print(f"  Drex: {len(up)} of {len(pieces)} regions are paper"
           + (f"; not paper: {', '.join(dropped)}" if dropped else ""))
-    layouts = arrange.arrange(right, below, base=1 / 8, top=8)
+    layouts = arrange.arrange(right, below, base=base, top=8)
     with ThreadPoolExecutor(max_workers=8) as pool:
         places = list(pool.map(lambda lay: build.place(up, lay[0], best),
                                layouts))
     pick, probs, res = build.choose([fit.compose(up, pl) for pl in places])
     choice = pick if pick is not None else 0
     clock(f"page: Drex picked layout {choice + 1} of {len(layouts)}", [res])
-    cells, placed, c4 = build.improve(
-        up, layouts[choice][0], best, right, below, 1 / 8, rounds=2,
-        on_round=lambda w, n, k, pr: print(
-            f"           Drex re-checked {w} in {n} spots: "
-            + ("kept it" if not k else f"moved it ({pr[f'image_{k + 1}']:.2f})")))
-    clock("page: Drex re-decided the weakest pieces", c4)
+    cells, placed, c4 = agents.repair(
+        up, layouts[choice][0], best, right, below, base, on_step=lambda e: print(
+            "           " + (f"piece agents, fit: {e['happy']}" if "happy" in e
+                             else f"{e['piece']} picked option {e['pick'] + 1} of "
+                                  f"{e['options']} ({e['p']:.2f})")))
+    clock("piece agents: each piece checks its spot, unhappy ones move", c4)
     cells = arrange._normal(cells)
     at = {v: k for k, v in cells.items()}
     for r in range(1 + max(r for r, _ in cells.values())):

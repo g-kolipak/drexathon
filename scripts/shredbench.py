@@ -122,8 +122,12 @@ def main() -> int:
         for arm, img in arms.items():
             if not img.exists():
                 continue
-            text = clean(parse(img))
-            (ROOT / "runs" / "shredbench" / f"{name}.{arm}.txt").write_text(text)
+            cached = ROOT / "runs" / "shredbench" / f"{name}.{arm}.txt"
+            if arm == "scene" and cached.exists():
+                text = cached.read_text()  # the scene never changes
+            else:
+                text = clean(parse(img))
+                cached.write_text(text)
             s = (ned(truth, text), bleu(truth.split(), text.split()),
                  rouge_l(truth.split(), text.split()))
             rows[arm].append(s)
