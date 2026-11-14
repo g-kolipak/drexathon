@@ -104,3 +104,92 @@ def repair(up: dict, cells: dict, best: dict, right: dict, below: dict,
         if not moved:
             break
     return cells, placed, calls
+
+
+REVIEW = ("Image 1 is a torn page put back together; each fragment carries a "
+          "red number. Is the page correctly rebuilt: every fragment in its "
+          "right place and turned the right way, text reading across tears?")
+WORST = ("In Image 1, which numbered fragment is most clearly in the wrong "
+         "place or turned the wrong way? Answer none if all are right.")
+
+
+def _numbered(up, placed):
+    img = fit.compose(up, placed).copy()
+    x0 = min(v[0] for v in placed.values())
+    y0 = min(v[1] for v in placed.values())
+    names = sorted(placed)
+    size = max(2.0, img.shape[1] / 500)
+    for n, p in enumerate(names, 1):
+        h, w = up[p].shape[:2]
+        c = (placed[p][0] - x0 + w // 2, placed[p][1] - y0 + h // 2)
+        cv2.putText(img, str(n), c, cv2.FONT_HERSHEY_SIMPLEX, size,
+                    (40, 40, 230), int(size * 3), cv2.LINE_AA)
+    return img, names
+
+
+def review(up: dict, cells: dict, placed: dict, best: dict, right: dict,
+           below: dict, base, rounds: int = 3, ask_fn=default_ask,
+           model: str = VISION_MODEL, on_step=None):
+    """Drex reviews the whole page; the piece it flags is re-placed (spots,
+    swaps, other turns) from close-ups, and tray pieces get a chance too.
+    Returns (cells, placed, calls)."""
+    from .arrange import base as stem
+    calls = []
+    for _ in range(rounds):
+        img, names = _numbered(up, placed)
+        crit = {f"piece_{n}": f"Fragment {n}." for n in range(1, len(names) + 1)}
+        crit["none"] = "None: every fragment is right."
+        res = ask_fn(CONTEXT, {"ok": {"type": "noul", "instructions": REVIEW},
+                               "worst": {"type": "choice", "instructions": WORST,
+                                         "criteria": crit}},
+                     model=model, images=[data_url(img, 1000)])
+        calls.append(res)
+        ok = float(res.body["answers"]["ok"]["noul"])
+        probs = res.body["answers"]["worst"]["probabilities"]
+        worst = max(probs, key=probs.get)
+        if on_step:
+            on_step({"review_ok": round(ok, 2), "flagged": worst})
+        used = {stem(p) for p in cells}
+        movers = [] if worst == "none" or ok >= 0.6 else \
+            [names[int(worst[6:]) - 1]]
+        movers += [p for p in up if stem(p) not in used
+                   and p.split("@")[-1] in (p, "0")][:2]  # tray pieces
+        if not movers:
+            break
+        for w in movers:
+            at = {v: k for k, v in cells.items()}
+            rest = {k: v for k, v in at.items() if v != w}
+            free = {(r + dr, c + dc) for r, c in rest
+                    for dr, dc in STEPS} - set(rest)
+            spots = sorted(free, key=lambda s: -_gain(
+                w, s, cells, rest, right, below, base)[0])[:4]
+            twins = [t for t in up if stem(t) == stem(w) and t != w]
+            options = ([cells] if w in cells else []) + \
+                [{**{k: v for k, v in cells.items() if k != w}, w: s}
+                 for s in spots]
+            if w in cells:
+                options += [{**{k: v for k, v in cells.items() if k != w},
+                             t: cells[w]} for t in twins]
+                options += [{**cells, w: cells[u], u: cells[w]}
+                            for u in sorted(cells, key=lambda u: -_gain(
+                                w, cells[u], cells, rest, right, below,
+                                base)[0]) if u != w][:2]
+            options = options[:8]
+            if len(options) < 2 and (w in cells or not options):
+                continue  # nothing to choose between
+            with ThreadPoolExecutor(max_workers=8) as pool:
+                places = list(pool.map(lambda o: place(up, o, best), options))
+            focus = [w if w in o else next(t for t in twins if t in o)
+                     for o in options]
+            k, pr, res2 = _pick([_view(up, pl, f) for pl, f in
+                                 zip(places, focus)], ask_fn, model)
+            calls.append(res2)
+            keep_first = w in cells
+            better = pr[f"image_{k + 1}"] >= (pr["image_1"] + 0.1
+                                              if keep_first else 0.3)
+            if (k or not keep_first) and better:
+                cells, placed = options[k], places[k]
+            if on_step:
+                on_step({"piece": w, "options": len(options), "pick": k,
+                         "p": round(pr[f"image_{k + 1}"], 2)})
+    return cells, placed, calls
