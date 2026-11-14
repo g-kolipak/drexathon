@@ -18,6 +18,7 @@ from .masks import largest as _largest, split as _split
 # piece area as a share of the photo: only a noise floor and 'not the
 # whole table'. What is really paper is Drex's call (scripts/rebuild_photo).
 MIN_SHARE, MAX_SHARE = 0.0003, 0.8
+LEAK_SHARE = 0.004  # leaked white paper is only rescued when this big
 
 
 def _el(k: int):
@@ -74,7 +75,7 @@ def _leaked_paper(table, bright):
     near_edge = cv2.dilate((~table).astype(np.uint8), _el(9)) > 0
     n, labels, stats, _ = cv2.connectedComponentsWithStats(cand, 4)
     for k in range(1, n):
-        if stats[k, cv2.CC_STAT_AREA] < MIN_SHARE * table.size:
+        if stats[k, cv2.CC_STAT_AREA] < LEAK_SHARE * table.size:
             continue
         sel = (labels == k).astype(np.uint8)
         rim = (sel - cv2.erode(sel, _el(3))) > 0
