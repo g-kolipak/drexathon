@@ -45,25 +45,34 @@ def main() -> int:
     ap.add_argument("--fast", action="store_true")
     ap.add_argument("--reuse", action="store_true")
     args = ap.parse_args()
-    clock = Clock()
     image = cv2.imread(args.photo)
     out = ROOT / "runs" / "photo" / Path(args.photo).stem
+    out.mkdir(parents=True, exist_ok=True)
+    clock = Clock(out)
     (out / "joins").mkdir(parents=True, exist_ok=True)
     saved = out / "scores.json"
-    masks = (plain.find(image) if plain.is_plain(image)
-             else shade.grow(image, find_pieces(image)))
+    masks = (plain.find(image) if plain.is_plain(image) else
+             plain.trim_sunlit_table(image, shade.grow(image, find_pieces(image))))
+    clock(f"find: {len(masks)} candidate regions (OpenCV)",
+          image=cutouts.outline(image, masks) if masks else image)
+    if not args.reuse:  # Drex decides which touching regions are one piece
+        n0 = len(masks)
+        masks, cm = plain.merge_touching(image, masks)
+        clock(f"merge: Drex joined touching regions that are one piece "
+              f"({n0} -> {len(masks)})", cm, image=cutouts.outline(image, masks))
     pieces = {f"p{i + 1}": cutouts.straighten(cutouts.cutout(image, m))
               for i, m in enumerate(masks)}
     where = {f"p{i + 1}": [float(v) for v in np.argwhere(m > 0).mean(0)[::-1]]
              for i, m in enumerate(masks)}
-    clock(f"find: {len(masks)} candidate regions (OpenCV)")
     if args.reuse:
         data = json.loads(saved.read_text())
     else:
         data, calls = {}, []
         paper, turns, upright, c1 = screen.check(pieces, workers=args.workers)
         calls += c1
-        clock("check: paper or not + which way up", c1)
+        kept = [upright[p] for p in pieces if paper[p] >= 0.5]
+        clock("check: paper or not + which way up", c1,
+              image=cutouts.sheet(kept) if kept else None)
         up = {p: upright[p] for p in pieces if paper[p] >= 0.5}
         if not args.fast:
             best, c2 = stages.rate_pairs(up, args.workers)
@@ -107,14 +116,15 @@ def main() -> int:
     pick, probs, res = build.choose([fit.compose(up, pl) for pl in places])
     choice = pick if pick is not None else 0
     (right, below), base = layouts[choice][1], layouts[choice][2]
-    clock(f"page: Drex picked layout {choice + 1} of {len(layouts)} ("
-          f"{'pick-one' if base else 'both answers'})", [res])
+    clock(image=fit.compose(up, places[choice]), label=f"page: Drex picked layout {choice + 1} of {len(layouts)} ("
+          f"{'pick-one' if base else 'both answers'})", calls=[res])
     cells, placed, c4 = agents.repair(
         up, layouts[choice][0], best, right, below, base, on_step=lambda e: print(
             "           " + (f"piece agents, fit: {e['happy']}" if "happy" in e
                              else f"{e['piece']} picked option {e['pick'] + 1} of "
                                   f"{e['options']} ({e['p']:.2f})")))
-    clock("piece agents: each piece checks its spot, unhappy ones move", c4)
+    clock("piece agents: each piece checks its spot, unhappy ones move", c4,
+          image=fit.compose(up, placed))
     cells = arrange._normal(cells)
     at = {v: k for k, v in cells.items()}
     for r in range(1 + max(r for r, _ in cells.values())):
