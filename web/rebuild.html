@@ -91,8 +91,10 @@
       renderSteps(id, job.steps || []);
       const logText = job.log.join("\n");
       if ($("log").textContent !== logText) { $("log").textContent = logText; $("log").scrollTop = $("log").scrollHeight; }
-      if (job.status === "running") {
-        $("state").textContent = "Drex is rebuilding… step " + ((job.steps || []).length + 1);
+      if (job.status === "running" || job.status === "queued") {
+        $("state").textContent = job.status === "queued"
+          ? "Waiting for the previous photo to finish…"
+          : "Drex is rebuilding… step " + ((job.steps || []).length + 1);
         if (!timer) timer = setInterval(tick, 1500);
         return;
       }
