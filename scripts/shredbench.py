@@ -36,13 +36,16 @@ def _small_jpeg(path: Path, maxdim: int = 3000) -> bytes:
 def parse(path: Path) -> str:
     """Markdown of an image file, via Nace Perception Parse."""
     h = {"Authorization": f"Bearer {os.environ['NACE_API_KEY']}"}
-    name = f"{path.parent.name}_{path.stem}.jpg"
+    body = _small_jpeg(path)
+    import hashlib
+    name = (f"{path.parent.name}_{path.stem}_"
+            f"{hashlib.sha1(body).hexdigest()[:10]}.jpg")  # unique per image
     for attempt in range(3):
         grant = httpx.post(f"{API}/documents/upload-grants", headers=h,
                            json={"path": name}, timeout=60).json()
         up = httpx.post(grant["upload_url"],
                         headers={"X-Upload-Token": grant["token"]},
-                        files={"file": (name, _small_jpeg(path))},
+                        files={"file": (name, body)},
                         data={"metadata": json.dumps({"path": name})},
                         timeout=120).json()
         if "result" in up:
