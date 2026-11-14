@@ -47,11 +47,12 @@ def _gain(piece, cell, layout, at, right, below, base=None):
 
 
 def arrange(right: dict, below: dict, beam: int = 60, starts: int = 12,
-            base: float | None = None):
+            base: float | None = None, top: int = 1):
     """Best layout found: (cells {piece: (row, col)}, score, links).
 
     links lists every neighbour pair in the layout as
-    (a, b, direction, Drex confidence).
+    (a, b, direction, Drex confidence). With top > 1, a list of the best
+    `top` distinct layouts instead, each as (cells, score, links).
     """
     pieces = sorted(set(right) | set(below))
     seeds = sorted(((p, a, b, d) for d, t in (("right", right),
@@ -62,6 +63,7 @@ def arrange(right: dict, below: dict, beam: int = 60, starts: int = 12,
         cells = {a: (0, 0), b: (0, 1) if d == "right" else (1, 0)}
         states.append((evidence(p, base), cells))
     best = max(states, key=lambda s: s[0]) if states else (0.0, {})
+    finals = list(states)
     while states:
         grown = []
         for score, cells in states:
@@ -88,6 +90,16 @@ def arrange(right: dict, below: dict, beam: int = 60, starts: int = 12,
                 break
         if states[0][0] > best[0]:
             best = states[0]
+        finals = states + [f for f in finals if len(f[1]) == len(states[0][1])]
+    if top > 1:
+        out, seen = [], set()
+        for score, cells in sorted([best] + finals, key=lambda s: -s[0]):
+            if _shape(cells) not in seen:
+                seen.add(_shape(cells))
+                out.append((_normal(cells), score, _links(cells, right, below)))
+            if len(out) == top:
+                break
+        return out
     score, cells = best
     return _normal(cells), score, _links(cells, right, below)
 

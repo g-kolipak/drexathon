@@ -10,6 +10,9 @@ with no table around them. On a quarter-size copy of the photo:
      which drops shadows. Pieces touching at a corner are split apart.
 """
 
+import os
+from concurrent.futures import ThreadPoolExecutor
+
 import cv2
 import numpy as np
 
@@ -17,8 +20,7 @@ from .masks import largest as _largest, split as _split
 
 # piece area as a share of the photo: only a noise floor and 'not the
 # whole table'. What is really paper is Drex's call (scripts/rebuild_photo).
-MIN_SHARE, MAX_SHARE = 0.0003, 0.8
-LEAK_SHARE = 0.004  # leaked white paper is only rescued when this big
+MIN_SHARE, MAX_SHARE, LEAK_SHARE = 0.0003, 0.8, 0.004  # leak: rescue size
 
 
 def _el(k: int):
@@ -116,7 +118,8 @@ def _close_outline(mask, paper):
 
 def _refine(half, cand, others, table_color):
     """GrabCut one candidate on the half-size photo. Masks are half-size."""
-    ys, xs = np.where(cv2.dilate(cand, _el(161)) > 0)
+    cv2.setRNGSeed(7)  # GrabCut starts at random: same answer every run
+    ys, xs = np.where(cv2.dilate(cand, _el(101)) > 0)
     box = np.s_[ys.min():ys.max() + 1, xs.min():xs.max() + 1]
     crop = half[box].copy()
     crop[others[box] > 0] = table_color  # hide the neighbours' colours
@@ -171,16 +174,22 @@ def _find(image, work: int) -> list:
     cands = [up(c) for c in _candidates(table, bright)]
     table_color = np.median(half[up(table) > 0], axis=0)
     pieces = []
-    for i, cand in enumerate(cands):
+    grown = [cv2.dilate(c, _el(9)) for c in cands]
+
+    def refine(i):  # OpenCV releases the GIL, so threads run side by side
         others = np.zeros(half.shape[:2], np.uint8)
-        for j, other in enumerate(cands):
+        for j, g in enumerate(grown):
             if j != i:
-                others |= cv2.dilate(other, _el(9))
-        refined = _refine(half, cand, others, table_color)
+                others |= g
+        return _refine(half, cands[i], others, table_color)
+
+    with ThreadPoolExecutor(max_workers=os.cpu_count() or 4) as pool:
+        results = list(pool.map(refine, range(len(cands))))
+    for refined in results:
         n, labels, stats, _ = cv2.connectedComponentsWithStats(refined, 4)
         for k in range(1, n):
             if stats[k, cv2.CC_STAT_AREA] >= MIN_SHARE * refined.size / 2:
-                pieces += _split(_largest(labels == k))
+                pieces += _split(_largest(labels == k), solid=0.85)
     pieces = [cv2.resize(p, (big_w, big_h), interpolation=cv2.INTER_NEAREST)
               for p in pieces if p.sum() >= MIN_SHARE * p.size / 2]
 

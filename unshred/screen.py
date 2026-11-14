@@ -17,7 +17,11 @@ import numpy as np
 
 from . import fit
 from .drex import VISION_MODEL, ask as default_ask
-from .tear import data_url
+from .tear import TURNS, data_url, quarter_turn
+
+CHECK = ("One region cut out of a photo of a table with torn paper on it. "
+         "Images 1 to 4 show the same region, each turned a further "
+         "quarter turn clockwise, on a plain dark background.")
 
 PAPER_CONTEXT = ("Regions cut out of a photo of a table on which torn "
                  "paper fragments lie. Each image shows one region on a "
@@ -48,6 +52,38 @@ def is_paper(pieces: dict, ask_fn=default_ask, model: str = VISION_MODEL,
             probs.update(got)
             calls.append(res)
     return probs, calls
+
+
+def check(pieces: dict, ask_fn=default_ask, model: str = VISION_MODEL,
+          workers: int = 16):
+    """One Drex call per piece, all in parallel: is it paper, and which
+    quarter turn is upright. Returns (paper, turns, upright, calls)."""
+    def one(item):
+        pid, piece = item
+        images = [data_url(quarter_turn(piece, t), 512) for t in TURNS]
+        res = ask_fn(CHECK, {
+            "paper": {"type": "noul", "instructions": PAPER_Q.format(i=1)},
+            "upright": {"type": "choice",
+                        "instructions": "In which image is the printed text "
+                                        "upright, reading normally from left "
+                                        "to right?",
+                        "criteria": {f"image_{i + 1}": f"Image {i + 1}."
+                                     for i in range(4)}}},
+            model=model, images=images)
+        a = res.body["answers"]
+        probs = a["upright"]["probabilities"]
+        best = max(range(4), key=lambda i: probs[f"image_{i + 1}"])
+        return pid, float(a["paper"]["noul"]), best, probs, res
+
+    paper, turns, upright, calls = {}, {}, {}, []
+    with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+        for pid, pp, best, probs, res in pool.map(one, pieces.items()):
+            paper[pid] = pp
+            turns[pid] = {"degrees": TURNS[best],
+                          "confidence": round(probs[f"image_{best + 1}"], 4)}
+            upright[pid] = quarter_turn(pieces[pid], TURNS[best])
+            calls.append(res)
+    return paper, turns, upright, calls
 
 
 def _band_colors(piece, side: str, share: float = 0.06):
@@ -105,19 +141,24 @@ def _quick(a, b, direction: str, k: int):
 
 
 def shortlist(up: dict, k: int = 3, keep: int = 8, all_upto: int = 12,
-              scale: float = 0.5):
-    """Jobs (a, b, direction, (dx, dy, score)) worth a Drex check."""
+              scale: float = 0.5, as_best: bool = False):
+    """Jobs (a, b, direction, (dx, dy, score)) worth a Drex check. With
+    as_best, {"a|b|d": {p, dx, dy}} instead: the pre-screen's score and
+    best alignment per shortlisted pair, for compare.py to rank by."""
     ids = list(up)
     small = {p: cv2.resize(up[p], None, fx=scale, fy=scale,
                            interpolation=cv2.INTER_AREA) for p in ids}
-    quick = {}
-    for d in ("right", "below"):
-        for a in ids:
-            for b in ids:
-                if a != b:
-                    picks, s = _quick(small[a], small[b], d, k)
-                    quick[(a, b, d)] = ([(int(x / scale), int(y / scale), c)
-                                         for x, y, c in picks], s)
+    keys = [(a, b, d) for d in ("right", "below") for a in ids for b in ids
+            if a != b]
+
+    def one(key):
+        a, b, d = key
+        picks, s = _quick(small[a], small[b], d, k)
+        return key, ([(int(x / scale), int(y / scale), c)
+                      for x, y, c in picks], s)
+
+    with ThreadPoolExecutor(max_workers=16) as pool:
+        quick = dict(pool.map(one, keys))
     chosen = set()
     for d in ("right", "below"):
         for p in ids:
@@ -128,5 +169,11 @@ def shortlist(up: dict, k: int = 3, keep: int = 8, all_upto: int = 12,
             n = len(ids) if len(ids) <= all_upto else keep
             chosen |= {(p, b, d) for b in out[:n]}
             chosen |= {(a, p, d) for a in inn[:n]}
-    return [(a, b, d, f) for (a, b, d) in sorted(chosen)
+    jobs = [(a, b, d, f) for (a, b, d) in sorted(chosen)
             for f in quick[(a, b, d)][0]]
+    if not as_best:
+        return jobs
+    return {f"{a}|{b}|{d}": {"p": round(quick[(a, b, d)][1], 4),
+                             "dx": quick[(a, b, d)][0][0][0],
+                             "dy": quick[(a, b, d)][0][0][1]}
+            for (a, b, d) in chosen}
