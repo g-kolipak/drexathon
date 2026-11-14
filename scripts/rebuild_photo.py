@@ -34,7 +34,7 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from unshred import (agents, arrange, build, compare, cutouts, fit,  # noqa: E402
-                     plain, review, scoring, screen, shade, stages)
+                     holes, plain, review, scoring, screen, shade, stages)
 from unshred.stages import Clock  # noqa: E402
 from unshred.photo import find_pieces  # noqa: E402
 
@@ -134,6 +134,11 @@ def main() -> int:
                                   f" of {e['options']} ({e['p']:.2f})")))
     clock("final check: Drex reviews the whole page and fixes what it flags",
           c5, image=fit.compose(up, placed))
+    placed, cells, c6 = holes.fill(up, cells, placed, on_step=lambda e: print(
+        f"           {e['piece']} -> hole, as {e['to']} (Drex {e['pick']:.2f};"
+        f" page {e['page'][0]:.2f} -> {e['page'][1]:.2f})"))
+    clock("fill holes: loose pieces tried in the gaps of the page", c6,
+          image=fit.compose(up, placed))
     cells = arrange._normal(cells)
     at = {v: k for k, v in cells.items()}
     for r in range(1 + max(r for r, _ in cells.values())):
