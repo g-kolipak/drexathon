@@ -34,14 +34,14 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
 from unshred import (agents, arrange, build, compare, cutouts, fit,  # noqa: E402
-                     plain, scoring, screen, shade, stages)
+                     plain, review, scoring, screen, shade, stages)
 from unshred.stages import Clock  # noqa: E402
 from unshred.photo import find_pieces  # noqa: E402
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__.split("\n")[0])
     ap.add_argument("photo")
-    ap.add_argument("--workers", type=int, default=32)
+    ap.add_argument("--workers", type=int, default=16)
     ap.add_argument("--fast", action="store_true")
     ap.add_argument("--reuse", action="store_true")
     args = ap.parse_args()
@@ -126,7 +126,7 @@ def main() -> int:
                                   f"{e['options']} ({e['p']:.2f})")))
     clock("piece agents: each piece checks its spot, unhappy ones move", c4,
           image=fit.compose(up, placed))
-    cells, placed, c5 = agents.review(
+    cells, placed, c5 = review.review(
         up, cells, placed, best, right, below, base, on_step=lambda e: print(
             "           " + (f"Drex review: page right {e['review_ok']}, "
                              f"flagged {e['flagged']}" if "review_ok" in e
