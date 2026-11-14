@@ -12,3 +12,6 @@ __pycache__/
 
 # os
 .DS_Store
+
+# large local screenshot, not for the repo
+image.png
