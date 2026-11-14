@@ -126,6 +126,14 @@ def main() -> int:
                                   f"{e['options']} ({e['p']:.2f})")))
     clock("piece agents: each piece checks its spot, unhappy ones move", c4,
           image=fit.compose(up, placed))
+    cells, placed, c5 = agents.review(
+        up, cells, placed, best, right, below, base, on_step=lambda e: print(
+            "           " + (f"Drex review: page right {e['review_ok']}, "
+                             f"flagged {e['flagged']}" if "review_ok" in e
+                             else f"{e['piece']} picked option {e['pick'] + 1}"
+                                  f" of {e['options']} ({e['p']:.2f})")))
+    clock("final check: Drex reviews the whole page and fixes what it flags",
+          c5, image=fit.compose(up, placed))
     cells = arrange._normal(cells)
     at = {v: k for k, v in cells.items()}
     for r in range(1 + max(r for r, _ in cells.values())):
