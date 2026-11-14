@@ -76,8 +76,9 @@ def test_pieces_are_shuffled_and_seed_stable():
 def test_piece_line_widths_match_grid_columns():
     cols = 5
     shr = shred(TEXT, rows=2, cols=cols, seed=3)
-    for pos, pid in shr.answer_key.items():
-        piece = next(p for p in shr.pieces if p.piece_id == pid)
+    by_id = {p.piece_id: p for p in shr.pieces}
+    for pid, pos in shr.answer_key.items():
+        piece = by_id[pid]  # KeyError names the missing id
         c = pos[1]
         expected = PAGE_WIDTH // cols if c < cols - 1 else (
             PAGE_WIDTH - PAGE_WIDTH // cols * (cols - 1)

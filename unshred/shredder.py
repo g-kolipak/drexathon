@@ -81,6 +81,12 @@ def shred(text: str, rows: int, cols: int, width: int = PAGE_WIDTH,
             pieces.append(Piece(piece_id=piece_id, lines=lines))
             answer_key[piece_id] = (r, c)
 
+    ids = [p.piece_id for p in pieces]
+    if len(ids) != len(set(ids)) or set(ids) != set(answer_key):
+        raise RuntimeError(
+            f"piece/answer-key divergence: pieces={len(ids)}, "
+            f"unique={len(set(ids))}, key={len(answer_key)}"
+        )
     rng = random.Random(seed)
     rng.shuffle(pieces)
     return Shred(pieces=pieces, answer_key=answer_key,
