@@ -104,39 +104,44 @@ def sheet(pieces, cols: int = 3, cell: int = 520, color=(30, 28, 28)):
     return out
 
 
-def compose(pieces: dict, clusters: list, gap: int = 24,
-            color=(30, 28, 28)):
-    """The rebuilt page: every group of linked pieces laid out on a grid.
+def layout(sizes: dict, groups: list, loose=(), gap: int = 24):
+    """Top-left corner (x, y) of every piece, and the canvas (width, height).
 
-    pieces maps id -> upright BGRA cut-out, clusters is a list of
-    {id: (row, col)} groups (the assembler's). Pieces keep their real
-    size. Groups go one under the other, loose pieces come last.
+    sizes maps id -> (height, width). groups is a list of {id: (row, col)}
+    and they are drawn side by side. Loose pieces form one row underneath.
+    Pieces keep their real size and sit in the middle of their grid cell.
     """
-    blocks = []
-    for group in clusters:
+    pos, x0, bottom = {}, gap, gap
+    for group in groups:
         rows = sorted({r for r, _ in group.values()})
         cols = sorted({c for _, c in group.values()})
-        hs = {r: max(pieces[p].shape[0] for p, (pr, _) in group.items()
-                     if pr == r) for r in rows}
-        ws = {c: max(pieces[p].shape[1] for p, (_, pc) in group.items()
-                     if pc == c) for c in cols}
-        ys = {r: sum(hs[q] + gap for q in rows if q < r) for r in rows}
-        xs = {c: sum(ws[q] + gap for q in cols if q < c) for c in cols}
-        block = np.zeros((sum(hs.values()) + gap * len(rows),
-                          sum(ws.values()) + gap * len(cols), 4), np.uint8)
+        hs = {r: max(sizes[p][0] for p, (pr, _) in group.items() if pr == r)
+              for r in rows}
+        ws = {c: max(sizes[p][1] for p, (_, pc) in group.items() if pc == c)
+              for c in cols}
         for p, (r, c) in group.items():
-            img = pieces[p]
-            y = ys[r] + (hs[r] - img.shape[0]) // 2
-            x = xs[c] + (ws[c] - img.shape[1]) // 2
-            block[y:y + img.shape[0], x:x + img.shape[1]] = img
-        blocks.append(block)
-    blocks.sort(key=lambda b: -(b[..., 3] > 0).sum())
-    width = max(b.shape[1] for b in blocks) + 2 * gap
-    out = np.full((sum(b.shape[0] + gap for b in blocks) + gap, width, 3),
-                  color, np.uint8)
-    y = gap
-    for block in blocks:
-        h, w = block.shape[:2]
-        out[y:y + h, gap:gap + w] = on_canvas(block, color)
-        y += h + gap
-    return out
+            x = x0 + sum(ws[q] + gap for q in cols if q < c)
+            y = gap + sum(hs[q] + gap for q in rows if q < r)
+            pos[p] = (x + (ws[c] - sizes[p][1]) // 2,
+                      y + (hs[r] - sizes[p][0]) // 2)
+        x0 += sum(ws.values()) + gap * len(cols) + 2 * gap
+        bottom = max(bottom, gap + sum(hs.values()) + gap * len(rows))
+    x, y = gap, bottom + (2 * gap if groups else 0)
+    for p in loose:
+        pos[p] = (x, y)
+        x += sizes[p][1] + gap
+    height = y + max((sizes[p][0] for p in loose), default=0) + gap
+    return pos, (max(x0, x), height if loose else bottom)
+
+
+def compose(pieces: dict, groups: list, loose=(), gap: int = 24,
+            color=(30, 28, 28)):
+    """The rebuilt page as one picture. pieces maps id -> BGRA cut-out."""
+    pos, (width, height) = layout(
+        {p: img.shape[:2] for p, img in pieces.items()}, groups, loose, gap)
+    out = np.zeros((height, width, 4), np.uint8)
+    for p, (x, y) in pos.items():
+        img = pieces[p]
+        region = out[y:y + img.shape[0], x:x + img.shape[1]]
+        region[...] = np.where(img[..., 3:4] > region[..., 3:4], img, region)
+    return on_canvas(out, color)

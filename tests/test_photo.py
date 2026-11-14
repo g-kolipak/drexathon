@@ -116,8 +116,18 @@ def test_outline_sheet_and_compose_make_pictures(scene):
     pieces = {f"p{i}": cutouts.cutout(photo, m) for i, m in enumerate(masks)}
     assert cutouts.sheet(list(pieces.values()), cols=2,
                          cell=200).shape == (400, 400, 3)
-    page = cutouts.compose(pieces, [{"p0": (0, 0), "p1": (0, 1)},
-                                    {"p2": (0, 0)}])
+    page = cutouts.compose(pieces, [{"p0": (0, 0), "p1": (0, 1)}], ["p2"])
     assert page.ndim == 3 and page.shape[2] == 3
     widths = pieces["p0"].shape[1] + pieces["p1"].shape[1]
     assert page.shape[1] >= widths
+
+
+def test_layout_puts_groups_side_by_side_and_loose_pieces_below():
+    sizes = {"a": (100, 200), "b": (120, 150), "c": (80, 90), "d": (50, 60)}
+    pos, (width, height) = cutouts.layout(
+        sizes, [{"a": (0, 0), "b": (0, 1)}, {"c": (0, 0)}], ["d"], gap=10)
+    assert pos["a"][0] < pos["b"][0] < pos["c"][0]      # left to right
+    assert pos["b"][0] >= pos["a"][0] + 200             # no overlap
+    assert pos["d"][1] >= max(pos[p][1] + sizes[p][0] for p in "abc")
+    assert width >= pos["c"][0] + 90 and height >= pos["d"][1] + 50
+    assert cutouts.layout(sizes, [], ["a", "d"], gap=10)[0]["d"][0] == 220
