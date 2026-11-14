@@ -33,7 +33,7 @@ import numpy as np
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from unshred import arrange, build, compare, cutouts, fit, scoring, screen, shade  # noqa: E402,E501
+from unshred import arrange, build, compare, cutouts, fit, plain, scoring, screen, shade  # noqa: E402,E501
 from unshred.drex import VISION_MODEL, ask  # noqa: E402
 from unshred.photo import find_pieces  # noqa: E402
 
@@ -100,7 +100,8 @@ def main() -> int:
     out = ROOT / "runs" / "photo" / Path(args.photo).stem
     (out / "joins").mkdir(parents=True, exist_ok=True)
     saved = out / "scores.json"
-    masks = shade.grow(image, find_pieces(image))
+    masks = (plain.find(image) if plain.is_plain(image)
+             else shade.grow(image, find_pieces(image)))
     pieces = {f"p{i + 1}": cutouts.straighten(cutouts.cutout(image, m))
               for i, m in enumerate(masks)}
     where = {f"p{i + 1}": [float(v) for v in np.argwhere(m > 0).mean(0)[::-1]]
@@ -133,6 +134,9 @@ def main() -> int:
                                                         // 90) % 4))
           for p in pieces if paper[p] >= 0.5}
     right, below = data["pick"]["right"], data["pick"]["below"]
+    if not up:
+        print("  Drex found no paper pieces; nothing to rebuild")
+        return 1
     dropped = [f"{p} ({paper[p]:.2f})" for p in pieces if p not in up]
     print(f"  Drex: {len(up)} of {len(pieces)} regions are paper"
           + (f"; not paper: {', '.join(dropped)}" if dropped else ""))

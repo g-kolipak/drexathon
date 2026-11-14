@@ -24,16 +24,33 @@ ROOT = Path(__file__).resolve().parent.parent
 API = "https://console.nace.ai/v1"
 
 
+def _small_jpeg(path: Path, maxdim: int = 3000) -> bytes:
+    import cv2
+    img = cv2.imread(str(path))
+    s = maxdim / max(img.shape[:2])
+    if s < 1:
+        img = cv2.resize(img, None, fx=s, fy=s, interpolation=cv2.INTER_AREA)
+    return cv2.imencode(".jpg", img, [cv2.IMWRITE_JPEG_QUALITY, 92])[1].tobytes()
+
+
 def parse(path: Path) -> str:
     """Markdown of an image file, via Nace Perception Parse."""
     h = {"Authorization": f"Bearer {os.environ['NACE_API_KEY']}"}
-    grant = httpx.post(f"{API}/documents/upload-grants", headers=h,
-                       json={"path": path.name}, timeout=60).json()
-    up = httpx.post(grant["upload_url"],
-                    headers={"X-Upload-Token": grant["token"]},
-                    files={"file": (path.name, path.read_bytes())},
-                    data={"metadata": json.dumps({"path": path.name})},
-                    timeout=120).json()
+    name = f"{path.parent.name}_{path.stem}.jpg"
+    for attempt in range(3):
+        grant = httpx.post(f"{API}/documents/upload-grants", headers=h,
+                           json={"path": name}, timeout=60).json()
+        up = httpx.post(grant["upload_url"],
+                        headers={"X-Upload-Token": grant["token"]},
+                        files={"file": (name, _small_jpeg(path))},
+                        data={"metadata": json.dumps({"path": name})},
+                        timeout=120).json()
+        if "result" in up:
+            break
+        print(f"  upload retry {attempt + 1}: {str(up)[:200]}", flush=True)
+        time.sleep(3)
+    else:
+        raise RuntimeError(f"upload failed: {str(up)[:300]}")
     src = {"type": "workspace_file", "workspace_id": grant["workspace_id"],
            "file_id": up["result"]["file"]["file_id"]}
     job = httpx.post(f"{API}/documents/parse?wait_seconds=60", headers=h,
