@@ -73,7 +73,7 @@ def main() -> int:
         kept = [upright[p] for p in pieces if paper[p] >= 0.5]
         clock("check: paper or not + which way up", c1,
               image=cutouts.sheet(kept) if kept else None)
-        up = {p: upright[p] for p in pieces if paper[p] >= 0.5}
+        up = stages.variants(pieces, turns, paper)
         if not args.fast:
             best, c2 = stages.rate_pairs(up, args.workers)
             calls += c2
@@ -90,9 +90,7 @@ def main() -> int:
                 "usage": scoring.usage(calls)}
         saved.write_text(json.dumps(data, indent=1))
     paper, turns, best = data["paper"], data["turns"], data["best"]
-    up = {p: np.ascontiguousarray(np.rot90(pieces[p], k=(-turns[p]["degrees"]
-                                                        // 90) % 4))
-          for p in pieces if paper[p] >= 0.5}
+    up = stages.variants(pieces, turns, paper)
     right, below = data["pick"]["right"], data["pick"]["below"]
     area = {p: int((up[p][..., 3] > 128).sum()) for p in up}
     tiny = [p for p in up if area[p] < 0.2 * float(np.median(list(area.values())))]
@@ -105,8 +103,11 @@ def main() -> int:
     if not up:
         print("  Drex found no paper pieces; nothing to rebuild")
         return 1
-    dropped = [f"{p} ({paper[p]:.2f})" for p in pieces if p not in up]
-    print(f"  Drex: {len(up)} of {len(pieces)} regions are paper"
+    kept = {arrange.base(p) for p in up}
+    turned = sorted(p for p in kept if f"{p}@0" in up)
+    dropped = [f"{p} ({paper[p]:.2f})" for p in pieces if p not in kept]
+    print(f"  Drex: {len(kept)} of {len(pieces)} regions are paper"
+          + (f"; trying all 4 turns of {', '.join(turned)}" if turned else "")
           + (f"; not paper: {', '.join(dropped)}" if dropped else ""))
     # the best layouts two ways (pick-one only / both answers): Drex chooses
     layouts = stages.candidates(up, best, right, below, data.get("rated", True))
@@ -130,7 +131,9 @@ def main() -> int:
     for r in range(1 + max(r for r, _ in cells.values())):
         print("     " + " ".join(f"{at.get((r, c), '..'):>3}" for c in
                                  range(1 + max(c for _, c in cells.values()))))
-    left = [p for p in up if p not in placed]
+    done = {arrange.base(p) for p in placed}
+    left = list({arrange.base(p): p for p in up
+                 if arrange.base(p) not in done}.values())
     page = fit.compose(up, placed)
     if left:  # leftover pieces in a tray under the page, for a human
         tray = fit.compose(up, fit.layout({p: up[p] for p in left}, [], {}))
@@ -143,7 +146,7 @@ def main() -> int:
     cv2.imwrite(str(out / "rebuilt.jpg"), page)
     (out / "layout.json").write_text(json.dumps({
         "cells": cells, "placed": placed, "links": arrange._links(
-            cells, right, below), "where": {p: where[p] for p in up}},
+            cells, right, below), "where": {p: where[arrange.base(p)] for p in placed}},
         indent=1))
     print(f"  total {time.monotonic() - clock.t0:.1f} s -> {out}/rebuilt.jpg")
     return 0

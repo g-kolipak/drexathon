@@ -18,6 +18,14 @@ import math
 CLIP = 0.995  # keep log-odds finite
 
 
+def base(p: str) -> str:
+    """'p3@90' (piece p3 turned 90 degrees) -> 'p3'."""
+    return p.split("@")[0]
+
+
+_b = base
+
+
 def evidence(p, base: float | None = None) -> float:
     """Yes/no confidence -> log-odds. With `base` (a pick-one question's
     chance level, e.g. 1/8), a pick share -> log(p / base) instead; a pair
@@ -59,7 +67,8 @@ def arrange(right: dict, below: dict, beam: int = 60, starts: int = 12,
                                               ("below", below))
                     for a in t for b, p in t[a].items()), reverse=True)
     states = []
-    for p, a, b, d in [s for s in seeds if evidence(s[0], base) > 0][:starts]:
+    for p, a, b, d in [s for s in seeds if evidence(s[0], base) > 0
+                       and _b(s[1]) != _b(s[2])][:starts]:
         cells = {a: (0, 0), b: (0, 1) if d == "right" else (1, 0)}
         states.append((evidence(p, base), cells))
     best = max(states, key=lambda s: s[0]) if states else (0.0, {})
@@ -70,8 +79,9 @@ def arrange(right: dict, below: dict, beam: int = 60, starts: int = 12,
             at = {v: k for k, v in cells.items()}
             free = {(r + dr, c + dc) for r, c in cells.values()
                     for dr, dc in ((0, 1), (0, -1), (1, 0), (-1, 0))} - set(at)
+            used = {_b(c) for c in cells}
             for piece in pieces:
-                if piece in cells:
+                if _b(piece) in used:  # one turn per piece
                     continue
                 for cell in free:
                     gain, touching = _gain(piece, cell, cells, at, right,
@@ -131,9 +141,9 @@ def _links(cells: dict, right: dict, below: dict) -> list:
 
 def unplaced(cells: dict, right: dict, below: dict, top: int = 3) -> list:
     """For each piece left out: its best candidates either way."""
-    out = []
+    out, used = [], {_b(c) for c in cells}
     for p in sorted(set(right) | set(below)):
-        if p in cells:
+        if _b(p) in used:
             continue
         cands = sorted(((t[a][b], a, b, d) for d, t in (("right", right),
                                                          ("below", below))

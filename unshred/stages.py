@@ -46,6 +46,23 @@ def rate_pairs(up: dict, workers: int, ask_fn=default_ask):
     return best, calls
 
 
+def variants(pieces: dict, turns: dict, paper: dict, sure: float = 0.9):
+    """Pieces Drex kept, turned upright. A piece whose upright turn Drex is
+    unsure of (often a blank one) enters as all 4 turns, 'p3@90' etc., so
+    the comparisons decide its turn; the layout uses one turn per piece."""
+    from .tear import TURNS, quarter_turn
+    up = {}
+    for p, img in pieces.items():
+        if paper[p] < 0.5:
+            continue
+        if turns[p]["confidence"] >= sure:
+            up[p] = quarter_turn(img, turns[p]["degrees"])
+        else:
+            for t in TURNS:
+                up[f"{p}@{t}"] = quarter_turn(img, t)
+    return up
+
+
 def merge(pick: dict, d: str, best: dict, up: dict) -> dict:
     """One confidence per pair from both Drex answers: the pick-one share
     (against chance, 1 in 8) and the yes/no rating, averaged as evidence.
