@@ -4,8 +4,9 @@
   uv run --env-file .env scripts/rebuild_photo.py image.png --fast
   uv run scripts/rebuild_photo.py image.png --reuse     re-lay out only
 
-1. find      OpenCV proposes every region that might be a piece and
-             traces its outline (all regions in parallel threads).
+1. find      OpenCV proposes every region that might be a piece, traces
+             its outline (in parallel threads) and wins back paper bent
+             into shadow (shade.py).
 2. check     Drex, one call per region, all in parallel: is it paper, and
              which quarter turn is upright.
 3. rate      OpenCV pre-screens pairs (text-line rhythm, colour, torn
@@ -32,7 +33,7 @@ import numpy as np
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from unshred import arrange, build, compare, cutouts, fit, scoring, screen  # noqa: E402,E501
+from unshred import arrange, build, compare, cutouts, fit, scoring, screen, shade  # noqa: E402,E501
 from unshred.drex import VISION_MODEL, ask  # noqa: E402
 from unshred.photo import find_pieces  # noqa: E402
 
@@ -99,7 +100,7 @@ def main() -> int:
     out = ROOT / "runs" / "photo" / Path(args.photo).stem
     (out / "joins").mkdir(parents=True, exist_ok=True)
     saved = out / "scores.json"
-    masks = find_pieces(image)
+    masks = shade.grow(image, find_pieces(image))
     pieces = {f"p{i + 1}": cutouts.straighten(cutouts.cutout(image, m))
               for i, m in enumerate(masks)}
     where = {f"p{i + 1}": [float(v) for v in np.argwhere(m > 0).mean(0)[::-1]]
