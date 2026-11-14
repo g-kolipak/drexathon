@@ -40,7 +40,7 @@ def _mask(piece, scale: float):
     return _MASKS[key]
 
 
-def snug(pos, piece, placed: dict, up: dict, reach: int = 72,
+def snug(pos, piece, placed: dict, up: dict, reach: int = 120,
          scale: float = 0.25):
     """Nudge `piece` around `pos` so its torn edges close up against the
     placed pieces without overlapping them (pure geometry)."""
@@ -62,7 +62,7 @@ def snug(pos, piece, placed: dict, up: dict, reach: int = 72,
         qx = int((placed[q][0] - ox) * scale)
         qy = int((placed[q][1] - oy) * scale)
         board[qy:qy + qm.shape[0], qx:qx + qm.shape[1]] |= qm
-    halo = cv2.dilate(board, np.ones((5, 5), np.uint8))
+    halo = cv2.dilate(board, np.ones((9, 9), np.uint8))
     pm = _mask(piece, scale)
     def score(dx, dy):
         x, y = int((x0 + dx - ox) * scale), int((y0 + dy - oy) * scale)
@@ -71,14 +71,15 @@ def snug(pos, piece, placed: dict, up: dict, reach: int = 72,
             return -1e9
         win_h = halo[y:y + pm.shape[0], x:x + pm.shape[1]]
         overlap = int((win_b & pm).sum())
-        return int((win_h & pm).sum()) - 5 * overlap  # touch, don't cover
+        # close gaps; a little overlap of torn fibres is fine
+        return int((win_h & pm).sum()) - 1.5 * overlap
 
     # coarse grid first, then a fine one around the best coarse spot
-    grid = [(dx, dy) for dy in range(-reach, reach + 1, 18)
-            for dx in range(-reach, reach + 1, 18)]
+    grid = [(dx, dy) for dy in range(-reach, reach + 1, 20)
+            for dx in range(-reach, reach + 1, 20)]
     cx, cy = max(grid, key=lambda d: score(*d))
-    fine = [(cx + dx, cy + dy) for dy in range(-15, 16, 3)
-            for dx in range(-15, 16, 3)]
+    fine = [(cx + dx, cy + dy) for dy in range(-18, 19, 3)
+            for dx in range(-18, 19, 3)]
     dx, dy = max(fine, key=lambda d: score(*d))
     return (x0 + dx, y0 + dy)
 

@@ -29,7 +29,7 @@ class CallResult:
 
 
 def ask(state, questions, model: str = DEFAULT_MODEL, key: str | None = None,
-        timeout: float = 90.0, max_retries: int = 3,
+        timeout: float = 90.0, max_retries: int = 8,
         images: list[str] | None = None) -> CallResult:
     """Send one decision request to Drex and return the parsed response.
 
@@ -89,5 +89,5 @@ def _sleep_backoff(attempt: int, resp: httpx.Response | None = None) -> None:
             retry_after = int(resp.headers["retry-after-ms"]) / 1000
         except (ValueError, KeyError):
             pass
-    base = retry_after if retry_after else min(2 ** attempt, 8)
+    base = retry_after if retry_after else min(2 ** attempt, 20)
     time.sleep(base + random.random() * 0.5)
